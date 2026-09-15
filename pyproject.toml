@@ -1,0 +1,20 @@
+[project]
+name = "lost-data-retrival"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+authors = [
+    { name = "TAHA", email = "james.alexander.rkh@gmail.com" }
+]
+requires-python = ">=3.13"
+dependencies = [
+    "os",
+    "platform",
+]
+
+[project.scripts]
+lost-data-retrival = "lost_data_retrival:main"
+
+[build-system]
+requires = ["uv_build>=0.12.5,<0.13.0"]
+build-backend = "uv_build"
