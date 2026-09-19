@@ -9,7 +9,7 @@ signatures = {
     "mp3": {"header": b"ID3", "footer": None, "max_size": 10 * 1024 * 1024},
 }
 
-drive = r"\\.\X:"
+drive = r"\\.\C:"
 sector_size = 512
 rcvd = 0
 
