@@ -1,143 +1,65 @@
 import os
-import platform
 
-# ---------------------------------------------------------------------------
-# SETTINGS
-# ---------------------------------------------------------------------------
-if platform.system() == "Windows":
-    drive = r"\\.\G:"
-else:
-    # IMPORTANT: To recover DELETED files, pass the raw partition (e.g., /dev/sdb1)
-    # If testing on existing files, pass the folder path.
-    drive = "/home/cybes07/Desktop/Lost_data_retrival/Test/"
+out_dir = "recover"
+os.makedirs(out_dir, exist_ok=True)
 
-OUTPUT_DIR = "recovered"
-os.makedirs(OUTPUT_DIR, exist_ok=True)
+signatures = {
+    "jpg": {"header": b"\xff\xd8\xff", "footer": b"\xff\xd9", "footer_len": 2},
+    "png": {"header": b"\x89PNG\r\n\x1a\n", "footer": b"\x49\x45\x4e\x44\xae\x42\x60\x82", "footer_len": 8},
+    "mp3": {"header": b"ID3", "footer": None, "max_size": 10 * 1024 * 1024},
+}
 
-size = 512  # Read sector size
-rcvd = 0    # Counter for recovered files
-MAX_SIZE = 50 * 1024 * 1024  # 50 MB max limit per file
+drive = r"\\.\X:"
+sector_size = 512
+rcvd = 0
 
-# Updated file signatures (Added MP4 header/footer and standard formats)
-FORMATS = [
-    # JPEG Signatures
-    ("jpg", b"\xff\xd8\xff\xdb", b"\xff\xd9"),
-    ("jpg", b"\xff\xd8\xff\xe0", b"\xff\xd9"),
-    ("jpg", b"\xff\xd8\xff\xee", b"\xff\xd9"),
-    ("jpg", b"\xff\xd8\xff\xe1", b"\xff\xd9"),
-    # PNG
-    ("png", b"\x89PNG\r\n\x1a\n", b"IEND\xae\x42\x60\x82"),
-    # MP4 Video (ftypisom, ftypmp42, ftypMSNV)
-    ("mp4", b"\x00\x00\x00\x18ftyp", None),
-    ("mp4", b"\x00\x00\x00\x1cftyp", None),
-    ("mp4", b"\x00\x00\x00\x20ftyp", None),
-    # MP3 Audio
-    ("mp3", b"\xff\xfb", None),
-    ("mp3", b"\xff\xf3", None),
-    ("mp3", b"\xff\xf2", None),
-    ("mp3", b"ID3", None),
-]
-
-RIFF_TAGS = {b"WAVE": "wav", b"AVI ": "avi"}
-
-# ---------------------------------------------------------------------------
-# RECOVERY LOGIC
-# ---------------------------------------------------------------------------
-if os.path.isdir(drive):
-    files_to_scan = [os.path.join(root, f) for root, _, files in os.walk(drive) for f in files]
-else:
-    files_to_scan = [drive]
-
-for target_path in files_to_scan:
-    try:
-        fileD = open(target_path, "rb")
-    except (PermissionError, FileNotFoundError):
-        print(f"Failed to access '{target_path}'. Run with sudo if scanning raw devices.")
-        continue
-
-    offs = 0
-    buffer = b""
+with open(drive, "rb") as fileD:
+    sector_num = 0
 
     while True:
-        chunk = fileD.read(size)
-        if not chunk:
+        # Seek strictly to sector boundaries
+        fileD.seek(sector_num * sector_size)
+        sector = fileD.read(sector_size)
+        if not sector:
             break
 
-        buffer += chunk
-        handled = False
+        for ext, sig in signatures.items():
+            header_offset = sector.find(sig["header"])
+            if header_offset >= 0:
+                abs_header_pos = (sector_num * sector_size) + header_offset
+                out_path = os.path.join(out_dir, f"{rcvd}.{ext}")
 
-        # 1. Check Standard Formats (JPG, PNG, MP4, MP3)
-        for ext, start, end in FORMATS:
-            found = buffer.find(start)
-            if found >= 0:
-                out_path = f"{OUTPUT_DIR}/{rcvd}_{ext}.{ext}"
-                fileN = open(out_path, "wb")
-                
-                # Write data starting from the matched header signature
-                data = buffer[found:]
-                written = len(data)
-                
-                print(f"==== Found {ext.upper()} at sector offset {offs} ====")
+                # Read forward from sector start
+                fileD.seek(sector_num * sector_size)
+                data = bytearray()
+                recovering = True
 
-                while True:
-                    if end:
-                        bfind = data.find(end)
-                        if bfind >= 0:
-                            fileN.write(data[: bfind + len(end)])
-                            break
-                        else:
-                            fileN.write(data)
-                    else:
-                        fileN.write(data)
-                        if written >= MAX_SIZE:
-                            break
-
-                    data = fileD.read(size)
-                    if not data:
+                while recovering:
+                    chunk = fileD.read(sector_size)
+                    if not chunk:
                         break
-                    written += len(data)
+                    data.extend(chunk)
 
-                fileN.close()
-                print(f"==== Recovered: {out_path} ====\n")
+                    if sig["footer"]:
+                        # Look for footer after header alignment
+                        relative_data = data[header_offset:]
+                        footer_pos = relative_data.find(sig["footer"])
+                        if footer_pos >= 0:
+                            clean_file = relative_data[: footer_pos + sig["footer_len"]]
+                            with open(out_path, "wb") as f_out:
+                                f_out.write(clean_file)
+                            recovering = False
+                    else:
+                        if len(data) >= sig["max_size"]:
+                            clean_file = data[header_offset : sig["max_size"]]
+                            with open(out_path, "wb") as f_out:
+                                f_out.write(clean_file)
+                            recovering = False
+
+                print(f"==== Recovered {out_path} at offset {hex(abs_header_pos)} ====")
                 rcvd += 1
-                buffer = b""
-                handled = True
+
+                # Advance to next sector after header
                 break
 
-        # 2. Check RIFF Formats (WAV, AVI)
-        if not handled:
-            found = buffer.find(b"RIFF")
-            if found >= 0 and len(buffer) >= found + 12:
-                tag = buffer[found + 8 : found + 12]
-                if tag in RIFF_TAGS:
-                    ext = RIFF_TAGS[tag]
-                    out_path = f"{OUTPUT_DIR}/{rcvd}_{ext}.{ext}"
-                    fileN = open(out_path, "wb")
-                    
-                    data = buffer[found:]
-                    written = len(data)
-                    print(f"==== Found {ext.upper()} at sector offset {offs} ====")
-
-                    while True:
-                        fileN.write(data)
-                        if written >= MAX_SIZE:
-                            break
-                        data = fileD.read(size)
-                        if not data:
-                            break
-                        written += len(data)
-
-                    fileN.close()
-                    print(f"==== Recovered: {out_path} ====\n")
-                    rcvd += 1
-                    buffer = b""
-
-        # Keep buffer small to prevent memory bloat
-        if len(buffer) > size * 4:
-            buffer = buffer[-size:]
-
-        offs += 1
-
-    fileD.close()
-
-print(f"Scan completed. Check the '{OUTPUT_DIR}' directory.")
+        sector_num += 1
